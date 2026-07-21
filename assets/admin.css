@@ -1,0 +1,41 @@
+.wbd-overlay {
+	display: none;
+	position: fixed;
+	inset: 0;
+	background: rgba( 0, 0, 0, 0.6 );
+	z-index: 100000;
+	align-items: center;
+	justify-content: center;
+}
+
+.wbd-overlay-box {
+	background: #fff;
+	border-radius: 8px;
+	padding: 32px 40px;
+	text-align: center;
+	max-width: 440px;
+	box-shadow: 0 8px 30px rgba( 0, 0, 0, 0.3 );
+}
+
+.wbd-overlay-box .spinner {
+	float: none;
+	margin: 0 auto 12px;
+}
+
+.wbd-overlay-msg {
+	font-size: 15px;
+	font-weight: 600;
+	margin: 0 0 10px;
+}
+
+.wbd-overlay-note {
+	color: #b32d2e;
+	font-size: 13px;
+	line-height: 1.7;
+	margin: 0;
+}
+
+.wbd-overlay-box .wbd-login-link {
+	display: inline-block;
+	margin-top: 16px;
+}
