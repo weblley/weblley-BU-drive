@@ -1,7 +1,7 @@
 <?php
 /**
  * Plugin Name: weblley BU drive
- * Description: サイト（DB＋ファイル）を手動バックアップしてZIPダウンロード／インポート復元。将来的にGoogle Drive自動保存に対応予定。
+ * Description: サイト（DB＋ファイル）のバックアップ・復元・移行。Google Driveへの毎日自動バックアップとスマート世代管理に対応。
  * Version: 0.9.2
  * Author: weblley
  * Requires at least: 6.0
