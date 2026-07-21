@@ -5,7 +5,8 @@
  * スマートモード（GFS方式）:
  *   - 直近30日: 毎日分をすべて保持
  *   - 30日〜90日: 各週の最新1件のみ保持
- *   - 90日以降: 各月の最新1件のみ保持
+ *   - 90日〜365日: 各月の最新1件のみ保持
+ *   - 365日超: すべて削除
  * シンプルモード: 最新N件のみ保持
  */
 
@@ -17,6 +18,7 @@ class WBD_Retention {
 
 	const DAILY_DAYS  = 30;
 	const WEEKLY_DAYS = 90;
+	const MAX_DAYS    = 365;
 
 	/**
 	 * 削除すべきアイテムを返す。
@@ -47,6 +49,10 @@ class WBD_Retention {
 
 			if ( $age <= self::DAILY_DAYS ) {
 				continue; // 毎日分を保持
+			}
+			if ( $age > self::MAX_DAYS ) {
+				$delete[] = $item; // 1年を超えたものは削除
+				continue;
 			}
 
 			$dt  = ( new DateTimeImmutable( '@' . $time ) )->setTimezone( $tz );

@@ -685,7 +685,7 @@ class WBD_Admin {
 						<td>
 							<label>
 								<input type="radio" name="wbd_retention_mode" value="smart" <?php checked( 'simple' !== $schedule['retention_mode'] ); ?>>
-								スマート（推奨）: 直近30日は毎日 → 3ヶ月までは週1 → それ以降は月1を保持
+								スマート（推奨）: 直近30日は毎日 → 3ヶ月までは週1 → 1年までは月1を保持 → 1年超は削除
 							</label><br>
 							<label style="display:inline-block; margin-top:6px;">
 								<input type="radio" name="wbd_retention_mode" value="simple" <?php checked( 'simple' === $schedule['retention_mode'] ); ?>>

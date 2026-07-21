@@ -2,7 +2,7 @@
 /**
  * Plugin Name: weblley BU drive
  * Description: サイト（DB＋ファイル）のバックアップ・復元・移行。Google Driveへの毎日自動バックアップとスマート世代管理に対応。
- * Version: 0.9.2
+ * Version: 0.9.3
  * Author: weblley
  * Requires at least: 6.0
  * Requires PHP: 8.0
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WBD_VERSION', '0.9.2' );
+define( 'WBD_VERSION', '0.9.3' );
 define( 'WBD_PLUGIN_FILE', __FILE__ );
 define( 'WBD_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 
