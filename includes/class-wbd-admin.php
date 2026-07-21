@@ -444,12 +444,14 @@ class WBD_Admin {
 		if ( ! preg_match( '/^\d{1,2}:\d{2}$/', $time ) ) {
 			$time = '01:00';
 		}
+		$mode = ( 'simple' === ( $_POST['wbd_retention_mode'] ?? '' ) ) ? 'simple' : 'smart';
 		WBD_Scheduler::update_settings(
 			array(
-				'enabled'    => empty( $_POST['wbd_enabled'] ) ? '' : '1',
-				'time'       => $time,
-				'retention'  => max( 1, (int) ( $_POST['wbd_retention'] ?? 7 ) ),
-				'keep_local' => empty( $_POST['wbd_keep_local'] ) ? '' : '1',
+				'enabled'        => empty( $_POST['wbd_enabled'] ) ? '' : '1',
+				'time'           => $time,
+				'retention_mode' => $mode,
+				'retention'      => max( 1, (int) ( $_POST['wbd_retention'] ?? 7 ) ),
+				'keep_local'     => empty( $_POST['wbd_keep_local'] ) ? '' : '1',
 			)
 		);
 
@@ -679,8 +681,19 @@ class WBD_Admin {
 						</td>
 					</tr>
 					<tr>
-						<th><label for="wbd-retention">Driveに残す世代数</label></th>
-						<td><input type="number" id="wbd-retention" name="wbd_retention" min="1" max="60" value="<?php echo esc_attr( $schedule['retention'] ); ?>" style="width:70px;"> 世代</td>
+						<th>世代管理</th>
+						<td>
+							<label>
+								<input type="radio" name="wbd_retention_mode" value="smart" <?php checked( 'simple' !== $schedule['retention_mode'] ); ?>>
+								スマート（推奨）: 直近30日は毎日 → 3ヶ月までは週1 → それ以降は月1を保持
+							</label><br>
+							<label style="display:inline-block; margin-top:6px;">
+								<input type="radio" name="wbd_retention_mode" value="simple" <?php checked( 'simple' === $schedule['retention_mode'] ); ?>>
+								シンプル: 最新
+								<input type="number" name="wbd_retention" min="1" max="60" value="<?php echo esc_attr( $schedule['retention'] ); ?>" style="width:70px;">
+								世代のみ保持
+							</label>
+						</td>
 					</tr>
 					<tr>
 						<th>ローカルZIP</th>

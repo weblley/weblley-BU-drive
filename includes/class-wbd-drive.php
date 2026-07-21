@@ -419,19 +419,26 @@ class WBD_Drive {
 	}
 
 	/**
-	 * 世代管理: 保持数を超えた古いバックアップをDriveから削除する。
+	 * 世代管理: 保持ポリシーに従って古いバックアップをDriveから削除する。
 	 *
+	 * @param array $policy ['mode' => 'smart'|'simple', 'keep' => int]
 	 * @return int 削除した件数。
 	 */
-	public static function apply_retention( $keep ) {
-		$keep  = max( 1, (int) $keep );
+	public static function apply_retention( array $policy ) {
 		$files = self::list_backups();
-		if ( is_wp_error( $files ) || count( $files ) <= $keep ) {
+		if ( is_wp_error( $files ) || empty( $files ) ) {
 			return 0;
 		}
+		$items = array();
+		foreach ( $files as $file ) {
+			$items[] = array(
+				'time' => WBD_Retention::timestamp_from_name( $file['name'], strtotime( $file['createdTime'] ?? '' ) ?: time() ),
+				'id'   => $file['id'],
+			);
+		}
 		$deleted = 0;
-		foreach ( array_slice( $files, $keep ) as $file ) {
-			$result = self::delete_file( $file['id'] );
+		foreach ( WBD_Retention::select_deletable( $items, $policy['mode'] ?? 'smart', $policy['keep'] ?? 7 ) as $item ) {
+			$result = self::delete_file( $item['id'] );
 			if ( ! is_wp_error( $result ) ) {
 				$deleted++;
 			}

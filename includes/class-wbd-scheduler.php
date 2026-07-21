@@ -26,10 +26,11 @@ class WBD_Scheduler {
 		$saved = get_option( self::OPTION, array() );
 		return array_merge(
 			array(
-				'enabled'    => '',
-				'time'       => '01:00',
-				'retention'  => 7,
-				'keep_local' => '',
+				'enabled'        => '',
+				'time'           => '01:00',
+				'retention_mode' => 'smart',
+				'retention'      => 7,
+				'keep_local'     => '',
 			),
 			is_array( $saved ) ? $saved : array()
 		);

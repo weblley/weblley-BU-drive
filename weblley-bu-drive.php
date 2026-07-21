@@ -2,7 +2,7 @@
 /**
  * Plugin Name: weblley BU drive
  * Description: サイト（DB＋ファイル）を手動バックアップしてZIPダウンロード／インポート復元。将来的にGoogle Drive自動保存に対応予定。
- * Version: 0.9.1
+ * Version: 0.9.2
  * Author: weblley
  * Requires at least: 6.0
  * Requires PHP: 8.0
@@ -15,7 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'WBD_VERSION', '0.9.1' );
+define( 'WBD_VERSION', '0.9.2' );
 define( 'WBD_PLUGIN_FILE', __FILE__ );
 define( 'WBD_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 
@@ -24,6 +24,7 @@ require_once WBD_PLUGIN_DIR . 'includes/class-wbd-job.php';
 require_once WBD_PLUGIN_DIR . 'includes/class-wbd-db-exporter.php';
 require_once WBD_PLUGIN_DIR . 'includes/class-wbd-backup.php';
 require_once WBD_PLUGIN_DIR . 'includes/class-wbd-restore.php';
+require_once WBD_PLUGIN_DIR . 'includes/class-wbd-retention.php';
 require_once WBD_PLUGIN_DIR . 'includes/class-wbd-crypto.php';
 require_once WBD_PLUGIN_DIR . 'includes/class-wbd-drive.php';
 require_once WBD_PLUGIN_DIR . 'includes/class-wbd-job-runner.php';

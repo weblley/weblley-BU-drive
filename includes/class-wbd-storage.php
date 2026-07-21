@@ -70,6 +70,29 @@ class WBD_Storage {
 	}
 
 	/**
+	 * 世代管理: 保持ポリシーに従って古いローカルZIPを削除する。
+	 *
+	 * @param array $policy ['mode' => 'smart'|'simple', 'keep' => int]
+	 * @return int 削除した件数。
+	 */
+	public static function apply_retention( array $policy ) {
+		$items = array();
+		foreach ( self::list_backups() as $backup ) {
+			$items[] = array(
+				'time' => WBD_Retention::timestamp_from_name( $backup['name'], $backup['mtime'] ),
+				'path' => $backup['path'],
+			);
+		}
+		$deleted = 0;
+		foreach ( WBD_Retention::select_deletable( $items, $policy['mode'] ?? 'smart', $policy['keep'] ?? 7 ) as $item ) {
+			if ( file_exists( $item['path'] ) && unlink( $item['path'] ) ) {
+				$deleted++;
+			}
+		}
+		return $deleted;
+	}
+
+	/**
 	 * 実行ログ（直近20件）に追記する。
 	 */
 	public static function log( $type, $message ) {

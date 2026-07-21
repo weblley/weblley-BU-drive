@@ -77,13 +77,23 @@ class WBD_Job_Runner {
 
 			// 世代管理とローカルZIPの後始末
 			$schedule = WBD_Scheduler::settings();
-			$deleted  = WBD_Drive::apply_retention( $schedule['retention'] );
+			$policy   = array(
+				'mode' => $schedule['retention_mode'],
+				'keep' => $schedule['retention'],
+			);
+			$deleted  = WBD_Drive::apply_retention( $policy );
 			if ( $deleted > 0 ) {
 				$message .= sprintf( '（古い世代を%d件削除）', $deleted );
 			}
 			if ( empty( $schedule['keep_local'] ) && file_exists( $result ) ) {
 				unlink( $result );
 				$message .= '｜ローカルZIPは削除しました';
+			} elseif ( ! empty( $job['scheduled'] ) ) {
+				// 定期実行でローカルにも残す設定の場合は、ローカル側にも同じ世代管理を適用
+				$local_deleted = WBD_Storage::apply_retention( $policy );
+				if ( $local_deleted > 0 ) {
+					$message .= sprintf( '｜ローカルの古い世代を%d件削除', $local_deleted );
+				}
 			}
 		}
 
