@@ -30,6 +30,13 @@ class WBD_Admin {
 		// バックグラウンド実行用ループバック（Cookieなしで来るためnoprivも必要。ワンタイムキーで認証）
 		add_action( 'wp_ajax_wbd_run_job', array( __CLASS__, 'handle_run_job' ) );
 		add_action( 'wp_ajax_nopriv_wbd_run_job', array( __CLASS__, 'handle_run_job' ) );
+		// Google Drive連携
+		add_action( 'admin_post_wbd_drive_save', array( __CLASS__, 'handle_drive_save' ) );
+		add_action( 'admin_post_wbd_oauth', array( __CLASS__, 'handle_oauth' ) );
+		add_action( 'admin_post_wbd_drive_disconnect', array( __CLASS__, 'handle_drive_disconnect' ) );
+		add_action( 'admin_post_wbd_schedule_save', array( __CLASS__, 'handle_schedule_save' ) );
+		add_action( 'admin_post_wbd_drive_delete', array( __CLASS__, 'handle_drive_delete' ) );
+		add_action( 'wp_ajax_wbd_drive_fetch', array( __CLASS__, 'handle_drive_fetch' ) );
 	}
 
 	public static function enqueue( $hook ) {
@@ -127,6 +134,7 @@ class WBD_Admin {
 				'type'    => 'backup',
 				'phase'   => 'バックアップを準備中…',
 				'targets' => array_values( $targets ),
+				'drive'   => ( ! empty( $_POST['wbd_drive_upload'] ) && WBD_Drive::is_connected() ) ? 1 : 0,
 			)
 		);
 	}
@@ -188,41 +196,7 @@ class WBD_Admin {
 		// キーは使い捨て（同じキーでの多重起動を防ぐ）
 		WBD_Job::update( array( 'key' => '' ) );
 
-		ignore_user_abort( true );
-		$started = microtime( true );
-		$type    = $job['type'] ?? 'backup';
-
-		if ( 'restore' === $type ) {
-			$path = WBD_Storage::resolve( $job['file'] ?? '' );
-			if ( ! $path ) {
-				self::finish_job( 'error', '復元対象のファイルが見つかりません。' );
-			}
-			$result = ( new WBD_Restore() )->run( $path );
-			if ( is_wp_error( $result ) ) {
-				self::finish_job( 'error', '復元失敗: ' . $result->get_error_message() . '（復元前の緊急DBダンプが保管ディレクトリに残っています）' );
-			}
-			self::finish_job( 'success', self::restore_done_message( $path, $started, $result ) );
-		}
-
-		$result = ( new WBD_Backup() )->run( $job['targets'] );
-		if ( is_wp_error( $result ) ) {
-			self::finish_job( 'error', 'バックアップ失敗: ' . $result->get_error_message() );
-		}
-		self::finish_job( 'success', self::backup_done_message( $result, $started ) );
-	}
-
-	/**
-	 * ジョブを終了状態にして記録し、リクエストを終える。
-	 */
-	private static function finish_job( $type, $message ) {
-		WBD_Storage::log( $type, $message );
-		WBD_Job::update(
-			array(
-				'status'   => ( 'error' === $type ) ? 'error' : 'done',
-				'message'  => $message,
-				'finished' => time(),
-			)
-		);
+		WBD_Job_Runner::run( $job );
 		wp_die();
 	}
 
@@ -417,6 +391,116 @@ class WBD_Admin {
 		return ( '' !== $origin && untrailingslashit( site_url() ) !== $origin );
 	}
 
+	// ---------------------------------------------------------------- Google Drive
+
+	public static function handle_drive_save() {
+		self::verify( 'wbd_drive_save' );
+
+		$fields = array( 'client_id' => sanitize_text_field( wp_unslash( $_POST['client_id'] ?? '' ) ) );
+		$secret = trim( (string) wp_unslash( $_POST['client_secret'] ?? '' ) );
+		if ( '' !== $secret ) {
+			$fields['client_secret'] = WBD_Crypto::encrypt( $secret );
+		}
+		WBD_Drive::update_settings( $fields );
+		self::respond( 'success', 'Google Drive設定を保存しました。「Googleと連携する」ボタンから認可を行ってください。' );
+	}
+
+	/**
+	 * Google OAuthコールバック。
+	 */
+	public static function handle_oauth() {
+		if ( ! current_user_can( self::CAP ) ) {
+			wp_die( '権限がありません。' );
+		}
+		$state = (string) wp_unslash( $_GET['state'] ?? '' );
+		if ( ! wp_verify_nonce( $state, 'wbd_oauth' ) ) {
+			self::respond( 'error', 'Google連携: stateの検証に失敗しました。もう一度お試しください。' );
+		}
+		if ( isset( $_GET['error'] ) ) {
+			self::respond( 'error', 'Google連携がキャンセルされました: ' . sanitize_text_field( wp_unslash( $_GET['error'] ) ) );
+		}
+		$code = (string) wp_unslash( $_GET['code'] ?? '' );
+		if ( '' === $code ) {
+			self::respond( 'error', 'Google連携: 認可コードがありません。' );
+		}
+		$result = WBD_Drive::exchange_code( $code );
+		if ( is_wp_error( $result ) ) {
+			self::respond( 'error', 'Google連携失敗: ' . $result->get_error_message() );
+		}
+		$account = WBD_Drive::settings()['account'] ?? '';
+		self::respond( 'success', 'Google Driveと連携しました' . ( $account ? '（' . $account . '）' : '' ) . '。' );
+	}
+
+	public static function handle_drive_disconnect() {
+		self::verify( 'wbd_drive_disconnect' );
+		WBD_Drive::disconnect();
+		self::respond( 'success', 'Google Driveとの連携を解除しました（Drive上のバックアップは残っています）。' );
+	}
+
+	public static function handle_schedule_save() {
+		self::verify( 'wbd_schedule_save' );
+
+		$time = sanitize_text_field( wp_unslash( $_POST['wbd_time'] ?? '01:00' ) );
+		if ( ! preg_match( '/^\d{1,2}:\d{2}$/', $time ) ) {
+			$time = '01:00';
+		}
+		WBD_Scheduler::update_settings(
+			array(
+				'enabled'    => empty( $_POST['wbd_enabled'] ) ? '' : '1',
+				'time'       => $time,
+				'retention'  => max( 1, (int) ( $_POST['wbd_retention'] ?? 7 ) ),
+				'keep_local' => empty( $_POST['wbd_keep_local'] ) ? '' : '1',
+			)
+		);
+
+		$next = WBD_Scheduler::next_scheduled();
+		self::respond(
+			'success',
+			$next
+				? 'スケジュールを保存しました。次回実行: ' . wp_date( 'Y-m-d H:i', $next )
+				: 'スケジュールを保存しました（自動バックアップは無効です）。'
+		);
+	}
+
+	public static function handle_drive_delete() {
+		self::verify( 'wbd_drive_delete' );
+
+		$file_id = sanitize_text_field( wp_unslash( $_POST['file_id'] ?? '' ) );
+		$name    = sanitize_file_name( wp_unslash( $_POST['name'] ?? '' ) );
+		if ( '' === $file_id ) {
+			self::respond( 'error', '削除対象の指定が不正です。' );
+		}
+		$result = WBD_Drive::delete_file( $file_id );
+		if ( is_wp_error( $result ) ) {
+			self::respond( 'error', 'Driveからの削除に失敗しました: ' . $result->get_error_message() );
+		}
+		self::respond( 'success', 'Driveから削除しました: ' . $name );
+	}
+
+	/**
+	 * Drive上のバックアップをローカルへ取得（バックグラウンドジョブ）。
+	 */
+	public static function handle_drive_fetch() {
+		self::verify( 'wbd_drive_fetch' );
+
+		if ( WBD_Job::is_running() ) {
+			self::respond( 'error', '別の処理が実行中です。完了を待ってから実行してください。' );
+		}
+		$file_id = sanitize_text_field( wp_unslash( $_POST['file_id'] ?? '' ) );
+		$name    = sanitize_file_name( wp_unslash( $_POST['name'] ?? '' ) );
+		if ( '' === $file_id || ! preg_match( '/\.zip$/i', $name ) ) {
+			self::respond( 'error', '取得対象の指定が不正です。' );
+		}
+		self::start_background_job(
+			array(
+				'type'    => 'drive_download',
+				'phase'   => 'Google Driveから取得を準備中…',
+				'file_id' => $file_id,
+				'name'    => $name,
+			)
+		);
+	}
+
 	// ---------------------------------------------------------------- view
 
 	public static function render_page() {
@@ -464,9 +548,17 @@ class WBD_Admin {
 					}
 					?>
 				</fieldset>
+				<?php if ( WBD_Drive::is_connected() ) : ?>
+					<p>
+						<label>
+							<input type="checkbox" name="wbd_drive_upload" value="1" checked>
+							完了後にGoogle Driveへアップロードする
+						</label>
+					</p>
+				<?php endif; ?>
 				<p class="submit">
 					<button type="submit" class="button button-primary">今すぐバックアップ</button>
-					<span class="description">サイトの容量によっては数分かかります。完了までページを閉じないでください。</span>
+					<span class="description">サイトの容量によっては数分かかります（バックグラウンドで実行されます）。</span>
 				</p>
 			</form>
 
@@ -513,6 +605,136 @@ class WBD_Admin {
 				<button type="submit" class="button">アップロード</button>
 				<p class="description">weblley BU drive で作成したZIPのみ復元できます。分割アップロードするためファイルサイズの上限はありません。アップロード後、一覧の「復元」で実行します。</p>
 			</form>
+
+			<hr style="margin:32px 0;">
+			<h2>Google Drive連携</h2>
+			<?php
+			$drive      = WBD_Drive::settings();
+			$configured = WBD_Drive::is_configured();
+			$connected  = WBD_Drive::is_connected();
+			?>
+			<?php if ( $connected ) : ?>
+				<p>
+					✅ 連携済み<?php echo ! empty( $drive['account'] ) ? '：<strong>' . esc_html( $drive['account'] ) . '</strong>' : ''; ?>
+					（保存先フォルダ: <code>weblley-bu-drive - <?php echo esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ); ?></code>）
+				</p>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return confirm('連携を解除しますか？（Drive上のバックアップは削除されません）');">
+					<?php wp_nonce_field( 'wbd_drive_disconnect' ); ?>
+					<input type="hidden" name="action" value="wbd_drive_disconnect">
+					<button type="submit" class="button">連携を解除</button>
+				</form>
+			<?php else : ?>
+				<p class="description">
+					Google Cloud Consoleで「OAuthクライアントID（ウェブアプリケーション）」を作成し、
+					承認済みリダイレクトURIに <code><?php echo esc_html( WBD_Drive::redirect_uri() ); ?></code> を登録してください。
+					必要なスコープは drive.file のみ（このプラグインが作成したファイル以外にはアクセスできません）。
+				</p>
+				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+					<?php wp_nonce_field( 'wbd_drive_save' ); ?>
+					<input type="hidden" name="action" value="wbd_drive_save">
+					<table class="form-table" style="max-width:700px;">
+						<tr>
+							<th><label for="wbd-client-id">クライアントID</label></th>
+							<td><input type="text" id="wbd-client-id" name="client_id" class="large-text" value="<?php echo esc_attr( $drive['client_id'] ?? '' ); ?>"></td>
+						</tr>
+						<tr>
+							<th><label for="wbd-client-secret">クライアントシークレット</label></th>
+							<td>
+								<input type="password" id="wbd-client-secret" name="client_secret" class="large-text" value="" placeholder="<?php echo $configured ? '保存済み（変更する場合のみ入力）' : ''; ?>">
+							</td>
+						</tr>
+					</table>
+					<p class="submit" style="padding-top:0;">
+						<button type="submit" class="button">設定を保存</button>
+						<?php if ( $configured ) : ?>
+							<a class="button button-primary" href="<?php echo esc_url( WBD_Drive::auth_url() ); ?>">Googleと連携する</a>
+						<?php endif; ?>
+					</p>
+				</form>
+			<?php endif; ?>
+
+			<h2>自動バックアップ（毎日）</h2>
+			<?php
+			$schedule = WBD_Scheduler::settings();
+			$next     = WBD_Scheduler::next_scheduled();
+			?>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<?php wp_nonce_field( 'wbd_schedule_save' ); ?>
+				<input type="hidden" name="action" value="wbd_schedule_save">
+				<table class="form-table" style="max-width:700px;">
+					<tr>
+						<th>自動バックアップ</th>
+						<td>
+							<label><input type="checkbox" name="wbd_enabled" value="1" <?php checked( ! empty( $schedule['enabled'] ) ); ?>> 有効にする</label>
+							<?php if ( $next ) : ?>
+								<span class="description">（次回実行: <?php echo esc_html( wp_date( 'Y-m-d H:i', $next ) ); ?>）</span>
+							<?php endif; ?>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="wbd-time">実行時刻</label></th>
+						<td>
+							<input type="time" id="wbd-time" name="wbd_time" value="<?php echo esc_attr( $schedule['time'] ); ?>">
+							<span class="description">サイトのタイムゾーン（<?php echo esc_html( wp_timezone_string() ); ?>）基準</span>
+						</td>
+					</tr>
+					<tr>
+						<th><label for="wbd-retention">Driveに残す世代数</label></th>
+						<td><input type="number" id="wbd-retention" name="wbd_retention" min="1" max="60" value="<?php echo esc_attr( $schedule['retention'] ); ?>" style="width:70px;"> 世代</td>
+					</tr>
+					<tr>
+						<th>ローカルZIP</th>
+						<td><label><input type="checkbox" name="wbd_keep_local" value="1" <?php checked( ! empty( $schedule['keep_local'] ) ); ?>> Driveアップロード後もサーバー上にZIPを残す</label></td>
+					</tr>
+				</table>
+				<p class="submit" style="padding-top:0;"><button type="submit" class="button button-primary">スケジュールを保存</button></p>
+				<p class="description">
+					※WP-Cronはサイトへのアクセスを契機に動くため、深夜にアクセスが無いサイトでは実行が遅れることがあります。
+					確実に動かすにはサーバーのcronで <code>wp-cron.php</code> を定期実行してください。
+				</p>
+			</form>
+
+			<?php if ( $connected ) : ?>
+				<h2>Google Drive上のバックアップ</h2>
+				<?php $drive_files = WBD_Drive::list_backups(); ?>
+				<?php if ( is_wp_error( $drive_files ) ) : ?>
+					<p style="color:#b32d2e;">一覧を取得できませんでした: <?php echo esc_html( $drive_files->get_error_message() ); ?></p>
+				<?php elseif ( empty( $drive_files ) ) : ?>
+					<p>Drive上にバックアップはまだありません。</p>
+				<?php else : ?>
+					<table class="widefat striped" style="max-width:900px;">
+						<thead>
+							<tr><th>ファイル</th><th>作成日時</th><th>サイズ</th><th>操作</th></tr>
+						</thead>
+						<tbody>
+						<?php foreach ( $drive_files as $file ) : ?>
+							<tr>
+								<td><code><?php echo esc_html( $file['name'] ); ?></code></td>
+								<td><?php echo esc_html( wp_date( 'Y-m-d H:i:s', strtotime( $file['createdTime'] ) ) ); ?></td>
+								<td><?php echo esc_html( size_format( (int) ( $file['size'] ?? 0 ) ) ); ?></td>
+								<td>
+									<form method="post" class="wbd-bg-form" data-running="Google Driveから取得しています…" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline;">
+										<?php wp_nonce_field( 'wbd_drive_fetch' ); ?>
+										<input type="hidden" name="action" value="wbd_drive_fetch">
+										<input type="hidden" name="file_id" value="<?php echo esc_attr( $file['id'] ); ?>">
+										<input type="hidden" name="name" value="<?php echo esc_attr( $file['name'] ); ?>">
+										<button type="submit" class="button">ローカルへ取得</button>
+									</form>
+									<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline;" onsubmit="return confirm('Drive上のこのバックアップを削除しますか？');">
+										<?php wp_nonce_field( 'wbd_drive_delete' ); ?>
+										<input type="hidden" name="action" value="wbd_drive_delete">
+										<input type="hidden" name="file_id" value="<?php echo esc_attr( $file['id'] ); ?>">
+										<input type="hidden" name="name" value="<?php echo esc_attr( $file['name'] ); ?>">
+										<button type="submit" class="button button-link-delete">削除</button>
+									</form>
+								</td>
+							</tr>
+						<?php endforeach; ?>
+						</tbody>
+					</table>
+					<p class="description">「ローカルへ取得」するとバックアップ一覧に追加され、そこから復元できます。</p>
+				<?php endif; ?>
+			<?php endif; ?>
 
 			<?php if ( $log ) : ?>
 				<h2>実行ログ（直近20件）</h2>

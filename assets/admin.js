@@ -208,6 +208,17 @@
 		} );
 	} );
 
+	// ---- 汎用バックグラウンドフォーム（Driveから取得など） ----
+	document.querySelectorAll( '.wbd-bg-form' ).forEach( function ( form ) {
+		form.addEventListener( 'submit', function ( e ) {
+			if ( e.defaultPrevented ) {
+				return;
+			}
+			e.preventDefault();
+			startBackgroundJob( form, form.getAttribute( 'data-running' ) || '処理を開始しています…' );
+		} );
+	} );
+
 	// ページ表示時に実行中のジョブがあれば進捗表示を再開（ブラウザを閉じて戻ってきた場合）
 	if ( wbdData.job && 'running' === wbdData.job.status ) {
 		showOverlay(
