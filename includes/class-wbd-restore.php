@@ -19,6 +19,19 @@ class WBD_Restore {
 	const SR_BATCH = 500;
 
 	/**
+	 * 全体進捗（0-100%）とフェーズ名をジョブへ記録する。
+	 */
+	private function progress( $percent, $phase ) {
+		WBD_Job::update(
+			array(
+				'percent'   => (int) round( max( 0, min( 100, $percent ) ) ),
+				'phase'     => $phase,
+				'heartbeat' => time(),
+			)
+		);
+	}
+
+	/**
 	 * @param string $zip_path 保管ディレクトリ内のZIPフルパス。
 	 * @return array{migrated:bool,notes:string}|WP_Error
 	 */
@@ -36,12 +49,7 @@ class WBD_Restore {
 			return new WP_Error( 'wbd_zip_open', 'ZIPファイルを開けませんでした。' );
 		}
 
-		WBD_Job::update(
-			array(
-				'phase'     => 'バックアップを検証中…',
-				'heartbeat' => time(),
-			)
-		);
+		$this->progress( 1, 'バックアップを検証中…' );
 
 		// 1) マニフェスト検証と移行判定
 		$manifest_json = $zip->getFromName( 'manifest.json' );
@@ -69,19 +77,33 @@ class WBD_Restore {
 		$migrate_url    = ( '' !== $origin_site && $origin_site !== $dest_site ) || ( '' !== $origin_home && $origin_home !== $dest_home );
 		$migrate_prefix = ( '' !== $old_prefix && $old_prefix !== $wpdb->prefix );
 
+		// 進捗配分の計算: 3-8%緊急ダンプ / 8%〜をDBとファイルのデータ量比で分配 / 98-100%仕上げ
+		$sql_stat    = $zip->statName( 'database.sql' );
+		$db_bytes    = ( false !== $sql_stat ) ? (int) $sql_stat['size'] : 0;
+		$files_bytes = 0;
+		for ( $i = 0; $i < $zip->numFiles; $i++ ) {
+			$stat = $zip->statIndex( $i );
+			if ( $stat && 0 === strpos( $stat['name'], 'files/' ) ) {
+				$files_bytes += (int) $stat['size'];
+			}
+		}
+		$work_bytes = max( 1, $db_bytes + $files_bytes );
+		$db_end     = 8 + (int) round( 90 * $db_bytes / $work_bytes );
+		// 移行時はDB帯の後半25%（最低2ポイント）をURL置換に割り当てる
+		$import_end = ( $migrate_url || $migrate_prefix )
+			? max( 8, $db_end - max( 2, (int) round( ( $db_end - 8 ) * 0.25 ) ) )
+			: $db_end;
+
 		// 2) ロールバック用の緊急DBダンプ
 		$storage   = WBD_Storage::ensure_dir();
 		$emergency = $storage . '/emergency-db-' . wp_date( 'Ymd-His' ) . '.sql';
 		$exporter  = new WBD_DB_Exporter();
+		$restore   = $this;
 		$dumped    = $exporter->export(
 			$emergency,
-			function ( $table ) {
-				WBD_Job::update(
-					array(
-						'phase'     => '復元前の緊急バックアップを作成中… ' . $table,
-						'heartbeat' => time(),
-					)
-				);
+			function ( $table, $index = 0, $count = 0 ) use ( $restore ) {
+				$percent = ( $count > 0 ) ? 3 + 5 * $index / $count : 3;
+				$restore->progress( $percent, '復元前の緊急バックアップを作成中… ' . $table );
 			}
 		);
 		if ( is_wp_error( $dumped ) ) {
@@ -95,19 +117,19 @@ class WBD_Restore {
 		try {
 			// 4) DBインポート（プレフィックスが違えば変換しながら）
 			if ( $has_db ) {
-				$result = $this->import_database( $zip, $migrate_prefix ? $old_prefix : '' );
+				$result = $this->import_database( $zip, $migrate_prefix ? $old_prefix : '', 8, $import_end, $db_bytes );
 				if ( is_wp_error( $result ) ) {
 					return $result;
 				}
 
 				if ( $migrate_prefix ) {
-					$this->fix_prefixed_rows( $old_prefix, $wpdb->prefix );
+					$this->fix_prefixed_rows( $old_prefix, $wpdb->prefix, $import_end );
 				}
 
 				if ( $migrate_url ) {
 					$pairs = $this->build_replacements( $origin_site, $origin_home, $origin_abs, $dest_site, $dest_home );
 					if ( $pairs ) {
-						$this->search_replace( $pairs );
+						$this->search_replace( $pairs, $import_end, $db_end );
 					}
 				}
 
@@ -117,10 +139,11 @@ class WBD_Restore {
 			}
 
 			// 5) ファイル展開
-			$result = $this->extract_files( $zip );
+			$result = $this->extract_files( $zip, $db_end, 98 );
 			if ( is_wp_error( $result ) ) {
 				return $result;
 			}
+			$this->progress( 99, '仕上げ処理中…' );
 		} finally {
 			$zip->close();
 			$this->maintenance( false );
@@ -147,12 +170,16 @@ class WBD_Restore {
 
 	/**
 	 * database.sql を1行ずつ実行する（エクスポータが1行1ステートメントを保証）。
+	 * 進捗はSQLファイルの読み取りバイト数から算出する。
 	 *
-	 * @param ZipArchive $zip        バックアップZIP。
-	 * @param string     $old_prefix 空でなければこのプレフィックスを現行のものへ変換する。
+	 * @param ZipArchive $zip         バックアップZIP。
+	 * @param string     $old_prefix  空でなければこのプレフィックスを現行のものへ変換する。
+	 * @param float      $p_start     進捗帯の開始%。
+	 * @param float      $p_end       進捗帯の終了%。
+	 * @param int        $total_bytes database.sql の非圧縮サイズ。
 	 * @return true|WP_Error
 	 */
-	private function import_database( ZipArchive $zip, $old_prefix = '' ) {
+	private function import_database( ZipArchive $zip, $old_prefix, $p_start, $p_end, $total_bytes ) {
 		global $wpdb;
 
 		$stream = $zip->getStream( 'database.sql' );
@@ -160,10 +187,13 @@ class WBD_Restore {
 			return new WP_Error( 'wbd_sql_stream', 'database.sql を読み込めませんでした。' );
 		}
 
-		$line_no = 0;
+		$line_no     = 0;
+		$bytes_read  = 0;
+		$total_bytes = max( 1, (int) $total_bytes );
 		while ( ( $line = fgets( $stream ) ) !== false ) {
 			$line_no++;
-			$statement = rtrim( trim( $line ), ';' );
+			$bytes_read += strlen( $line );
+			$statement   = rtrim( trim( $line ), ';' );
 			if ( '' === $statement || 0 === strpos( $statement, '--' ) ) {
 				continue;
 			}
@@ -179,11 +209,9 @@ class WBD_Restore {
 				);
 			}
 			if ( 0 === $line_no % 200 ) {
-				WBD_Job::update(
-					array(
-						'phase'     => sprintf( 'データベースを復元中… %s 行目', number_format_i18n( $line_no ) ),
-						'heartbeat' => time(),
-					)
+				$this->progress(
+					$p_start + ( $p_end - $p_start ) * min( 1, $bytes_read / $total_bytes ),
+					sprintf( 'データベースを復元中… %s 行目', number_format_i18n( $line_no ) )
 				);
 			}
 		}
@@ -210,15 +238,12 @@ class WBD_Restore {
 	/**
 	 * プレフィックス依存の行データを修正する（wp_capabilities / wp_user_roles 等）。
 	 */
-	private function fix_prefixed_rows( $old_prefix, $new_prefix ) {
+	private function fix_prefixed_rows( $old_prefix, $new_prefix, $percent = null ) {
 		global $wpdb;
 
-		WBD_Job::update(
-			array(
-				'phase'     => 'プレフィックス依存データを調整中…',
-				'heartbeat' => time(),
-			)
-		);
+		if ( null !== $percent ) {
+			$this->progress( $percent, 'プレフィックス依存データを調整中…' );
+		}
 
 		$like = $wpdb->esc_like( $old_prefix ) . '%';
 		$from = strlen( $old_prefix ) + 1;
@@ -326,7 +351,7 @@ class WBD_Restore {
 	/**
 	 * 全テーブルをシリアライズ対応でsearch-replaceする。
 	 */
-	private function search_replace( array $pairs ) {
+	private function search_replace( array $pairs, $p_start = null, $p_end = null ) {
 		global $wpdb;
 
 		$searches = array_keys( $pairs );
@@ -339,12 +364,17 @@ class WBD_Restore {
 		$table_no = 0;
 		foreach ( $tables as $table ) {
 			$table_no++;
-			WBD_Job::update(
-				array(
-					'phase'     => sprintf( 'URLを置換中… %s（%d/%d）', $table, $table_no, count( $tables ) ),
-					'heartbeat' => time(),
-				)
-			);
+			$phase = sprintf( 'URLを置換中… %s（%d/%d）', $table, $table_no, count( $tables ) );
+			if ( null !== $p_start && null !== $p_end ) {
+				$this->progress( $p_start + ( $p_end - $p_start ) * ( $table_no - 1 ) / max( 1, count( $tables ) ), $phase );
+			} else {
+				WBD_Job::update(
+					array(
+						'phase'     => $phase,
+						'heartbeat' => time(),
+					)
+				);
+			}
 
 			$columns = $wpdb->get_results( "DESCRIBE `{$table}`" );
 			if ( ! $columns ) {
@@ -464,7 +494,7 @@ class WBD_Restore {
 	 *
 	 * @return true|WP_Error
 	 */
-	private function extract_files( ZipArchive $zip ) {
+	private function extract_files( ZipArchive $zip, $p_start = 0, $p_end = 100 ) {
 		$abspath     = untrailingslashit( wp_normalize_path( ABSPATH ) );
 		$storage_rel = ltrim( str_replace( $abspath, '', wp_normalize_path( WBD_Storage::dir() ) ), '/' );
 		// 実行中の自分自身をバックアップ内の（古い可能性のある）版で上書きしない
@@ -480,12 +510,11 @@ class WBD_Restore {
 		}
 		WBD_Job::update(
 			array(
-				'total'     => $total,
-				'done'      => 0,
-				'phase'     => 'ファイルを展開中…',
-				'heartbeat' => time(),
+				'total' => $total,
+				'done'  => 0,
 			)
 		);
+		$this->progress( $p_start, 'ファイルを展開中…' );
 
 		$done = 0;
 		for ( $i = 0; $i < $zip->numFiles; $i++ ) {
@@ -529,12 +558,10 @@ class WBD_Restore {
 
 			$done++;
 			if ( 0 === $done % 100 || $done === $total ) {
-				WBD_Job::update(
-					array(
-						'done'      => $done,
-						'phase'     => sprintf( 'ファイルを展開中… %s / %s', number_format_i18n( $done ), number_format_i18n( $total ) ),
-						'heartbeat' => time(),
-					)
+				WBD_Job::update( array( 'done' => $done ) );
+				$this->progress(
+					$p_start + ( $p_end - $p_start ) * $done / max( 1, $total ),
+					sprintf( 'ファイルを展開中… %s / %s', number_format_i18n( $done ), number_format_i18n( $total ) )
 				);
 			}
 		}

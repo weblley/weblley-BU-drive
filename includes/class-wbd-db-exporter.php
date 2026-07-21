@@ -42,10 +42,13 @@ class WBD_DB_Exporter {
 			return new WP_Error( 'wbd_db_notables', 'エクスポート対象のテーブルが見つかりませんでした。' );
 		}
 
+		$table_index = 0;
+		$table_count = count( $tables );
 		foreach ( $tables as $table ) {
 			if ( is_callable( $progress ) ) {
-				call_user_func( $progress, $table );
+				call_user_func( $progress, $table, $table_index, $table_count );
 			}
+			$table_index++;
 			$create = $wpdb->get_row( "SHOW CREATE TABLE `{$table}`", ARRAY_N );
 			if ( ! $create || empty( $create[1] ) ) {
 				fclose( $fh );

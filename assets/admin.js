@@ -53,6 +53,16 @@
 		}
 	}
 
+	function formatRemain( seconds ) {
+		if ( seconds >= 3600 ) {
+			return Math.round( seconds / 3600 * 10 ) / 10 + '時間';
+		}
+		if ( seconds >= 60 ) {
+			return Math.round( seconds / 60 ) + '分';
+		}
+		return Math.max( 5, seconds ) + '秒';
+	}
+
 	// 結果を通知付きでページ再読み込み
 	function finish( ok, message ) {
 		window.removeEventListener( 'beforeunload', warnBeforeUnload );
@@ -112,8 +122,21 @@
 				var job = ( json && json.data ) || {};
 				if ( 'running' === job.status ) {
 					var text = job.phase || '処理を実行中です…';
-					if ( job.total > 0 && job.done > 0 ) {
-						text += '（' + Math.floor( ( job.done / job.total ) * 100 ) + '%）';
+					// 全体%（復元はサーバー計算のpercent、バックアップは件数から算出）
+					var pct = null;
+					if ( 'number' === typeof job.percent ) {
+						pct = job.percent;
+					} else if ( job.total > 0 && job.done > 0 ) {
+						pct = Math.floor( ( job.done / job.total ) * 100 );
+					}
+					if ( null !== pct ) {
+						text += '（' + pct + '%';
+						// 経過時間と進捗率から残り時間を概算
+						if ( 'number' === typeof job.elapsed && pct >= 3 && pct < 100 && job.elapsed >= 10 ) {
+							var remain = Math.round( job.elapsed * ( 100 - pct ) / pct );
+							text += '・残り約' + formatRemain( remain );
+						}
+						text += '）';
 					}
 					updateOverlay( text );
 					window.setTimeout( pollJob, 2000 );

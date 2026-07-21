@@ -55,6 +55,9 @@ class WBD_Job {
 			return array( 'status' => 'idle' );
 		}
 		unset( $job['key'], $job['poll_key'] );
+		if ( ! empty( $job['started'] ) && 'running' === ( $job['status'] ?? '' ) ) {
+			$job['elapsed'] = max( 0, time() - (int) $job['started'] );
+		}
 		if ( 'running' === ( $job['status'] ?? '' ) && ! self::is_running() ) {
 			$job['status']  = 'error';
 			$job['message'] = 'バックアップ処理からの応答が途絶えました。サーバーのエラーログを確認してください。';
