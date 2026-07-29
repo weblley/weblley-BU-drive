@@ -425,7 +425,8 @@ class WBD_Drive {
 		if ( is_wp_error( $folder ) ) {
 			return $folder;
 		}
-		$query = sprintf( "'%s' in parents and trashed = false and name contains 'weblley-bu-drive-'", $folder );
+		// 新形式（wbd-）と旧形式（weblley-bu-drive-）の両方を対象にする
+		$query = sprintf( "'%s' in parents and trashed = false and (name contains 'wbd-' or name contains 'weblley-bu-drive-')", $folder );
 		$body  = self::api( 'GET', '/files?q=' . rawurlencode( $query ) . '&fields=' . rawurlencode( 'files(id,name,size,createdTime)' ) . '&orderBy=' . rawurlencode( 'createdTime desc' ) . '&pageSize=100' );
 		if ( is_wp_error( $body ) ) {
 			return $body;

@@ -42,7 +42,8 @@ class WBD_Backup {
 
 		$dir      = WBD_Storage::ensure_dir();
 		$stamp    = wp_date( 'Ymd-His' );
-		$zip_path = $dir . '/weblley-bu-drive-' . $stamp . '.zip';
+		$host     = sanitize_file_name( (string) wp_parse_url( home_url(), PHP_URL_HOST ) );
+		$zip_path = $dir . '/wbd-' . $host . '-' . $stamp . '.zip';
 		$sql_path = $dir . '/db-' . $stamp . '.sql';
 
 		// 1) データベースをエクスポート
