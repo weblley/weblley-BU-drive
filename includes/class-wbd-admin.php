@@ -618,7 +618,7 @@ class WBD_Admin {
 			<?php if ( $connected ) : ?>
 				<p>
 					✅ 連携済み<?php echo ! empty( $drive['account'] ) ? '：<strong>' . esc_html( $drive['account'] ) . '</strong>' : ''; ?>
-					（保存先フォルダ: <code>weblley-bu-drive - <?php echo esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ); ?></code>）
+					（保存先: <code>weblley-bu-drive / <?php echo esc_html( wp_parse_url( home_url(), PHP_URL_HOST ) ); ?></code>）
 				</p>
 				<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" onsubmit="return confirm('連携を解除しますか？（Drive上のバックアップは削除されません）');">
 					<?php wp_nonce_field( 'wbd_drive_disconnect' ); ?>

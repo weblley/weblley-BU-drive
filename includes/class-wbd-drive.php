@@ -191,53 +191,125 @@ class WBD_Drive {
 
 	/**
 	 * 保存先フォルダを確保してIDを返す。
+	 * 構成: weblley-bu-drive（親）/ {ドメイン名}（サイトごと）/ バックアップZIP
 	 *
 	 * @return string|WP_Error
 	 */
 	public static function ensure_folder() {
 		$s = self::settings();
-		if ( ! empty( $s['folder_id'] ) ) {
-			$check = self::api( 'GET', '/files/' . rawurlencode( $s['folder_id'] ) . '?fields=id,trashed' );
+		if ( ! empty( $s['folder_v2_id'] ) ) {
+			$check = self::api( 'GET', '/files/' . rawurlencode( $s['folder_v2_id'] ) . '?fields=id,trashed' );
 			if ( ! is_wp_error( $check ) && empty( $check['trashed'] ) ) {
-				return $s['folder_id'];
+				return $s['folder_v2_id'];
 			}
 		}
 
-		$name  = 'weblley-bu-drive - ' . wp_parse_url( home_url(), PHP_URL_HOST );
+		$parent = self::find_or_create_folder( 'weblley-bu-drive', '' );
+		if ( is_wp_error( $parent ) ) {
+			return $parent;
+		}
+		$sub = self::find_or_create_folder( (string) wp_parse_url( home_url(), PHP_URL_HOST ), $parent );
+		if ( is_wp_error( $sub ) ) {
+			return $sub;
+		}
+		self::update_settings(
+			array(
+				'folder_v2_id'     => $sub,
+				'parent_folder_id' => $parent,
+			)
+		);
+
+		self::migrate_legacy_folder( $sub );
+		return $sub;
+	}
+
+	/**
+	 * 名前（＋親フォルダ）でフォルダを探し、無ければ作成してIDを返す。
+	 *
+	 * @return string|WP_Error
+	 */
+	private static function find_or_create_folder( $name, $parent_id ) {
 		$query = sprintf(
 			"name = '%s' and mimeType = 'application/vnd.google-apps.folder' and trashed = false",
 			str_replace( "'", "\\'", $name )
 		);
+		if ( '' !== $parent_id ) {
+			$query .= sprintf( " and '%s' in parents", $parent_id );
+		}
 		$found = self::api( 'GET', '/files?q=' . rawurlencode( $query ) . '&fields=files(id)' );
 		if ( is_wp_error( $found ) ) {
 			return $found;
 		}
 		if ( ! empty( $found['files'][0]['id'] ) ) {
-			self::update_settings( array( 'folder_id' => $found['files'][0]['id'] ) );
 			return $found['files'][0]['id'];
 		}
 
+		$meta = array(
+			'name'     => $name,
+			'mimeType' => 'application/vnd.google-apps.folder',
+		);
+		if ( '' !== $parent_id ) {
+			$meta['parents'] = array( $parent_id );
+		}
 		$created = self::api(
 			'POST',
 			'/files?fields=id',
 			array(
 				'headers' => array( 'Content-Type' => 'application/json; charset=UTF-8' ),
-				'body'    => wp_json_encode(
-					array(
-						'name'     => $name,
-						'mimeType' => 'application/vnd.google-apps.folder',
-					)
-				),
+				'body'    => wp_json_encode( $meta ),
 			)
 		);
 		if ( is_wp_error( $created ) ) {
 			return $created;
 		}
 		if ( empty( $created['id'] ) ) {
-			return new WP_Error( 'wbd_drive_folder', '保存先フォルダを作成できませんでした。' );
+			return new WP_Error( 'wbd_drive_folder', 'フォルダを作成できませんでした: ' . $name );
 		}
-		self::update_settings( array( 'folder_id' => $created['id'] ) );
 		return $created['id'];
+	}
+
+	/**
+	 * 旧構成（weblley-bu-drive - ドメイン名）のフォルダから新構成へZIPを移動する。
+	 * 一度移行したら旧フォルダIDをクリアするので以後は実行されない。
+	 */
+	private static function migrate_legacy_folder( $new_folder_id ) {
+		$s      = self::settings();
+		$legacy = $s['folder_id'] ?? '';
+		if ( '' === $legacy || $legacy === $new_folder_id ) {
+			if ( '' !== $legacy ) {
+				self::update_settings( array( 'folder_id' => '' ) );
+			}
+			return;
+		}
+
+		$files = self::api( 'GET', '/files?q=' . rawurlencode( sprintf( "'%s' in parents and trashed = false", $legacy ) ) . '&fields=files(id,name)&pageSize=100' );
+		if ( is_wp_error( $files ) ) {
+			return; // 次回アクセス時に再試行
+		}
+
+		$moved = 0;
+		foreach ( $files['files'] ?? array() as $file ) {
+			$result = self::api(
+				'PATCH',
+				'/files/' . rawurlencode( $file['id'] ) . '?addParents=' . rawurlencode( $new_folder_id ) . '&removeParents=' . rawurlencode( $legacy ) . '&fields=id',
+				array(
+					'headers' => array( 'Content-Type' => 'application/json; charset=UTF-8' ),
+					'body'    => '{}',
+				)
+			);
+			if ( ! is_wp_error( $result ) ) {
+				$moved++;
+			}
+		}
+
+		// 全件移動できたら旧フォルダを削除し、以後の移行処理を止める
+		if ( $moved === count( $files['files'] ?? array() ) ) {
+			self::delete_file( $legacy );
+			self::update_settings( array( 'folder_id' => '' ) );
+			if ( $moved > 0 ) {
+				WBD_Storage::log( 'success', sprintf( 'Driveフォルダ構成を変更し、旧フォルダから%d件を移動しました。', $moved ) );
+			}
+		}
 	}
 
 	// ---------------------------------------------------------------- ファイル操作
