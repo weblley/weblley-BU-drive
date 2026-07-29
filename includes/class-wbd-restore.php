@@ -136,6 +136,12 @@ class WBD_Restore {
 				// 念のためURL系オプションを移行先の値で確定させる
 				$wpdb->update( $wpdb->options, array( 'option_value' => $dest_site ), array( 'option_name' => 'siteurl' ) );
 				$wpdb->update( $wpdb->options, array( 'option_value' => $dest_home ), array( 'option_name' => 'home' ) );
+
+				// 別サイトへの移行では、引き継がれたGoogle Drive連携と自動バックアップをリセットする
+				// （移行元フォルダへの誤アップロードや、コピー先サイトからの意図しない定期実行を防ぐ）
+				if ( $migrate_url ) {
+					$this->reset_drive_after_migration();
+				}
 			}
 
 			// 5) ファイル展開
@@ -160,6 +166,9 @@ class WBD_Restore {
 				$parts[] = sprintf( 'プレフィックス変換 %s → %s', $old_prefix, $wpdb->prefix );
 			}
 			$notes = '移行モード: ' . implode( '、', $parts ) . '。ログイン情報は移行元サイトのものに変わっています';
+			if ( $migrate_url ) {
+				$notes .= '。Google Drive連携と自動バックアップはリセットしました（必要なら再連携してください）';
+			}
 		}
 
 		return array(
@@ -217,6 +226,33 @@ class WBD_Restore {
 		}
 		fclose( $stream );
 		return true;
+	}
+
+	/**
+	 * 移行で引き継がれたGoogle Drive連携・自動バックアップ設定をリセットする。
+	 * クライアントID/シークレットは残す（同一環境なら1クリックで再連携できる）。
+	 */
+	private function reset_drive_after_migration() {
+		// optionsテーブルが入れ替わった直後なのでキャッシュを捨ててDBの実態を読む
+		wp_cache_delete( 'wbd_drive', 'options' );
+		$drive = get_option( 'wbd_drive', array() );
+		if ( is_array( $drive ) && ! empty( $drive['refresh_token'] ) ) {
+			$drive['refresh_token']    = '';
+			$drive['account']          = '';
+			$drive['folder_id']        = '';
+			$drive['folder_v2_id']     = '';
+			$drive['parent_folder_id'] = '';
+			update_option( 'wbd_drive', $drive, false );
+		}
+		delete_transient( 'wbd_drive_token' );
+
+		wp_cache_delete( 'wbd_schedule', 'options' );
+		$schedule = get_option( 'wbd_schedule', array() );
+		if ( is_array( $schedule ) && ! empty( $schedule['enabled'] ) ) {
+			$schedule['enabled'] = '';
+			update_option( 'wbd_schedule', $schedule, false );
+		}
+		wp_clear_scheduled_hook( WBD_Scheduler::HOOK );
 	}
 
 	/**
