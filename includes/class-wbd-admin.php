@@ -702,8 +702,8 @@ class WBD_Admin {
 				</table>
 				<p class="submit" style="padding-top:0;"><button type="submit" class="button button-primary">スケジュールを保存</button></p>
 				<p class="description">
-					※WP-Cronはサイトへのアクセスを契機に動くため、深夜にアクセスが無いサイトでは実行が遅れることがあります。
-					確実に動かすにはサーバーのcronで <code>wp-cron.php</code> を定期実行してください。
+					※指定時刻にアクセスが無いサイトでも、時刻経過後に最初にサイトが動いたタイミングで自動実行されます（キャッチアップ機能）。
+					1日1回の実行が保証されるため、サーバー側のcron設定は不要です。
 				</p>
 			</form>
 

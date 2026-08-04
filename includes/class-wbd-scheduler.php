@@ -17,17 +17,95 @@ class WBD_Scheduler {
 
 	public static function init() {
 		add_action( self::HOOK, array( __CLASS__, 'run' ) );
-		// 自己修復: 「有効なのに予約イベントが存在しない」状態を検知したら予約し直す
-		// （プラグインの無効化→有効化やcron掃除系プラグインでイベントが消えるケースへの保険）
-		add_action( 'init', array( __CLASS__, 'ensure_scheduled' ) );
+		// 自己修復＋キャッチアップ（毎リクエストの軽量チェック）
+		add_action( 'init', array( __CLASS__, 'heartbeat' ) );
 	}
 
-	public static function ensure_scheduled() {
+	/**
+	 * 毎リクエストの見張り役。
+	 * 1) 「有効なのに予約イベントが無い」状態なら再予約（自己修復）
+	 * 2) 予定時刻を過ぎたのに今日まだ実行されていなければ、その場でバックグラウンド起動（キャッチアップ）
+	 *    → WP-Cronが深夜に発火しないサーバーでも、次にPHPが動いた瞬間に必ず実行される
+	 */
+	public static function heartbeat() {
 		$settings = self::settings();
-		if ( ! empty( $settings['enabled'] ) && false === wp_next_scheduled( self::HOOK ) ) {
+		if ( empty( $settings['enabled'] ) ) {
+			return;
+		}
+
+		if ( false === wp_next_scheduled( self::HOOK ) ) {
 			self::reschedule();
 			WBD_Storage::log( 'success', '自動バックアップの予約が消えていたため再予約しました（次回: ' . wp_date( 'Y-m-d H:i', self::next_timestamp( $settings['time'] ) ) . '）。' );
 		}
+
+		if ( self::is_due( $settings ) && ! WBD_Job::is_running() && ! get_transient( 'wbd_catchup_lock' ) ) {
+			set_transient( 'wbd_catchup_lock', 1, 10 * MINUTE_IN_SECONDS );
+			self::trigger_background( '（キャッチアップ実行）' );
+		}
+	}
+
+	/**
+	 * 予定時刻を過ぎていて、かつ今日まだ実行していないか。
+	 */
+	private static function is_due( array $settings ) {
+		if ( ( $settings['last_run_date'] ?? '' ) === wp_date( 'Y-m-d' ) ) {
+			return false;
+		}
+		if ( ! preg_match( '/^(\d{1,2}):(\d{2})$/', (string) $settings['time'], $m ) ) {
+			$m = array( '', '1', '00' );
+		}
+		$now = new DateTimeImmutable( 'now', wp_timezone() );
+		return $now >= $now->setTime( (int) $m[1], (int) $m[2], 0 );
+	}
+
+	/**
+	 * 今日の実行を記録する（同日の二重実行防止）。
+	 */
+	private static function mark_ran() {
+		$settings                  = self::settings();
+		$settings['last_run_date'] = wp_date( 'Y-m-d' );
+		update_option( self::OPTION, $settings, false );
+	}
+
+	/**
+	 * 定期バックアップをループバックでバックグラウンド起動する。
+	 * （訪問者のリクエストをブロックしないため、実行本体は別リクエストへ切り離す）
+	 */
+	private static function trigger_background( $label = '' ) {
+		self::mark_ran();
+		self::reschedule();
+
+		$saved   = get_option( 'wbd_settings', array() );
+		$targets = ! empty( $saved['targets'] ) ? $saved['targets'] : array( 'db', 'uploads', 'themes', 'plugins' );
+		$key     = wp_generate_password( 32, false, false );
+
+		WBD_Job::set(
+			array(
+				'status'    => 'running',
+				'type'      => 'backup',
+				'scheduled' => 1,
+				'drive'     => WBD_Drive::is_connected() ? 1 : 0,
+				'targets'   => array_values( $targets ),
+				'key'       => $key,
+				'phase'     => '定期バックアップを準備中…' . $label,
+				'done'      => 0,
+				'total'     => 0,
+				'started'   => time(),
+				'heartbeat' => time(),
+			)
+		);
+		wp_remote_post(
+			admin_url( 'admin-ajax.php' ),
+			array(
+				'timeout'   => 0.01,
+				'blocking'  => false,
+				'sslverify' => false,
+				'body'      => array(
+					'action'  => 'wbd_run_job',
+					'job_key' => $key,
+				),
+			)
+		);
 	}
 
 	/**
@@ -42,6 +120,7 @@ class WBD_Scheduler {
 				'retention_mode' => 'smart',
 				'retention'      => 7,
 				'keep_local'     => '',
+				'last_run_date'  => '',
 			),
 			is_array( $saved ) ? $saved : array()
 		);
@@ -94,10 +173,14 @@ class WBD_Scheduler {
 		if ( empty( $settings['enabled'] ) ) {
 			return;
 		}
+		if ( ( $settings['last_run_date'] ?? '' ) === wp_date( 'Y-m-d' ) ) {
+			return; // キャッチアップ実行などで今日はすでに実行済み
+		}
 		if ( WBD_Job::is_running() ) {
 			WBD_Storage::log( 'error', '定期バックアップをスキップしました（別の処理が実行中）。' );
 			return;
 		}
+		self::mark_ran();
 
 		$saved   = get_option( 'wbd_settings', array() );
 		$targets = ! empty( $saved['targets'] ) ? $saved['targets'] : array( 'db', 'uploads', 'themes', 'plugins' );
