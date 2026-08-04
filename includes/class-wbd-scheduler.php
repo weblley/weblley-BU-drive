@@ -17,6 +17,17 @@ class WBD_Scheduler {
 
 	public static function init() {
 		add_action( self::HOOK, array( __CLASS__, 'run' ) );
+		// 自己修復: 「有効なのに予約イベントが存在しない」状態を検知したら予約し直す
+		// （プラグインの無効化→有効化やcron掃除系プラグインでイベントが消えるケースへの保険）
+		add_action( 'init', array( __CLASS__, 'ensure_scheduled' ) );
+	}
+
+	public static function ensure_scheduled() {
+		$settings = self::settings();
+		if ( ! empty( $settings['enabled'] ) && false === wp_next_scheduled( self::HOOK ) ) {
+			self::reschedule();
+			WBD_Storage::log( 'success', '自動バックアップの予約が消えていたため再予約しました（次回: ' . wp_date( 'Y-m-d H:i', self::next_timestamp( $settings['time'] ) ) . '）。' );
+		}
 	}
 
 	/**
