@@ -30,6 +30,10 @@ class WBD_Admin {
 		// バックグラウンド実行用ループバック（Cookieなしで来るためnoprivも必要。ワンタイムキーで認証）
 		add_action( 'wp_ajax_wbd_run_job', array( __CLASS__, 'handle_run_job' ) );
 		add_action( 'wp_ajax_nopriv_wbd_run_job', array( __CLASS__, 'handle_run_job' ) );
+		// 診断（ループバック疎通テスト）
+		add_action( 'admin_post_wbd_loopback_test', array( __CLASS__, 'handle_loopback_test' ) );
+		add_action( 'wp_ajax_wbd_ping', array( __CLASS__, 'handle_ping' ) );
+		add_action( 'wp_ajax_nopriv_wbd_ping', array( __CLASS__, 'handle_ping' ) );
 		// Google Drive連携
 		add_action( 'admin_post_wbd_drive_save', array( __CLASS__, 'handle_drive_save' ) );
 		add_action( 'admin_post_wbd_oauth', array( __CLASS__, 'handle_oauth' ) );
@@ -391,6 +395,49 @@ class WBD_Admin {
 		return ( '' !== $origin && untrailingslashit( site_url() ) !== $origin );
 	}
 
+	// ---------------------------------------------------------------- 診断
+
+	/**
+	 * ループバック疎通確認用（認証不要・応答するだけ）。
+	 */
+	public static function handle_ping() {
+		wp_send_json_success( array( 'pong' => WBD_VERSION ) );
+	}
+
+	/**
+	 * サイト自身へのループバックリクエストが通るかテストする。
+	 * バックアップの起動はこの経路に依存しているため、これが失敗すると自動・手動とも動かない。
+	 */
+	public static function handle_loopback_test() {
+		self::verify( 'wbd_loopback_test' );
+
+		$response = wp_remote_post(
+			admin_url( 'admin-ajax.php' ),
+			array(
+				'timeout'   => 15,
+				'sslverify' => false,
+				'body'      => array( 'action' => 'wbd_ping' ),
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			self::respond( 'error', 'ループバック失敗（通信エラー）: ' . $response->get_error_message() . ' — サーバーが自分自身へのHTTPアクセスをブロックしています。' );
+		}
+		$code = wp_remote_retrieve_response_code( $response );
+		$body = json_decode( wp_remote_retrieve_body( $response ), true );
+		if ( 200 === $code && ! empty( $body['success'] ) ) {
+			self::respond( 'success', 'ループバック成功（HTTP 200）。バックアップの起動経路は正常です。' );
+		}
+		self::respond(
+			'error',
+			sprintf(
+				'ループバック異常: HTTP %d / 応答: %s — WAF・BASIC認証・アクセス制限が admin-ajax.php を妨げている可能性があります。',
+				$code,
+				esc_html( mb_substr( (string) wp_remote_retrieve_body( $response ), 0, 120 ) )
+			)
+		);
+	}
+
 	// ---------------------------------------------------------------- Google Drive
 
 	public static function handle_drive_save() {
@@ -748,6 +795,35 @@ class WBD_Admin {
 					<p class="description">「ローカルへ取得」するとバックアップ一覧に追加され、そこから復元できます。</p>
 				<?php endif; ?>
 			<?php endif; ?>
+
+			<h2>診断</h2>
+			<?php
+			$diag_job  = WBD_Job::public_state();
+			$diag_next = WBD_Scheduler::next_scheduled();
+			$diag_rows = array(
+				'プラグインバージョン' => WBD_VERSION,
+				'サーバー時刻（サイトTZ）' => wp_date( 'Y-m-d H:i:s' ) . '（' . wp_timezone_string() . '）',
+				'自動バックアップ'   => ! empty( $schedule['enabled'] ) ? '有効（' . esc_html( $schedule['time'] ) . '）' : '無効',
+				'次回のcron予約'    => $diag_next ? wp_date( 'Y-m-d H:i:s', $diag_next ) : '予約なし（次のアクセスで自己修復されます）',
+				'最終実行日'        => $schedule['last_run_date'] ?: '記録なし',
+				'DISABLE_WP_CRON' => ( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON ) ? 'true（アクセス連動cron停止中）' : '未設定（通常）',
+				'Google Drive'    => WBD_Drive::is_connected() ? '連携済み' : '未連携',
+				'ジョブ状態'        => esc_html( $diag_job['status'] ?? 'idle' ) . ( ! empty( $diag_job['phase'] ) ? '（' . esc_html( $diag_job['phase'] ) . '）' : '' ),
+			);
+			?>
+			<table class="widefat striped" style="max-width:700px;">
+				<tbody>
+				<?php foreach ( $diag_rows as $label => $value ) : ?>
+					<tr><td style="width:220px;"><strong><?php echo esc_html( $label ); ?></strong></td><td><?php echo wp_kses_post( $value ); ?></td></tr>
+				<?php endforeach; ?>
+				</tbody>
+			</table>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="margin-top:8px;">
+				<?php wp_nonce_field( 'wbd_loopback_test' ); ?>
+				<input type="hidden" name="action" value="wbd_loopback_test">
+				<button type="submit" class="button">ループバックテストを実行</button>
+				<span class="description">バックアップの起動はサイト自身へのHTTP通信（ループバック）を使います。これが失敗する環境では自動・手動とも動きません。</span>
+			</form>
 
 			<?php if ( $log ) : ?>
 				<h2>実行ログ（直近20件）</h2>

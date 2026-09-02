@@ -60,8 +60,10 @@ class WBD_Scheduler {
 
 	/**
 	 * 今日の実行を記録する（同日の二重実行防止）。
+	 * キャッチアップ起動ではループバックが実際に届いた時点（ジョブランナー側）で呼ぶ。
+	 * → 起動に失敗した場合は記録されず、10分後の次のリクエストで自動リトライされる。
 	 */
-	private static function mark_ran() {
+	public static function mark_ran() {
 		$settings                  = self::settings();
 		$settings['last_run_date'] = wp_date( 'Y-m-d' );
 		update_option( self::OPTION, $settings, false );
@@ -72,7 +74,6 @@ class WBD_Scheduler {
 	 * （訪問者のリクエストをブロックしないため、実行本体は別リクエストへ切り離す）
 	 */
 	private static function trigger_background( $label = '' ) {
-		self::mark_ran();
 		self::reschedule();
 
 		$saved   = get_option( 'wbd_settings', array() );

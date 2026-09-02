@@ -31,6 +31,10 @@ class WBD_Job_Runner {
 
 	private static function run_backup( array $job, $started ) {
 		$prefix = empty( $job['scheduled'] ) ? '' : '定期';
+		if ( ! empty( $job['scheduled'] ) ) {
+			// 実際に実行が始まった時点で「今日は実行済み」を記録する
+			WBD_Scheduler::mark_ran();
+		}
 		$result = ( new WBD_Backup() )->run( $job['targets'] ?? array() );
 		if ( is_wp_error( $result ) ) {
 			self::finish( 'error', $prefix . 'バックアップ失敗: ' . $result->get_error_message() );
