@@ -573,7 +573,7 @@ class WBD_Admin {
 		?>
 		<div class="wrap">
 			<h1>weblley BU drive</h1>
-			<p>手動バックアップ（ZIPダウンロード）とインポート復元。Google Drive連携は今後追加予定です。</p>
+			<p>バックアップ・復元・移行、Google Driveへの毎日自動バックアップと世代管理。</p>
 
 			<h2>バックアップを作成</h2>
 			<form id="wbd-backup-form" method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
