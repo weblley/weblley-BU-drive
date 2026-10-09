@@ -34,6 +34,8 @@ class WBD_Admin {
 		add_action( 'admin_post_wbd_loopback_test', array( __CLASS__, 'handle_loopback_test' ) );
 		add_action( 'wp_ajax_wbd_ping', array( __CLASS__, 'handle_ping' ) );
 		add_action( 'wp_ajax_nopriv_wbd_ping', array( __CLASS__, 'handle_ping' ) );
+		// GitHub更新トークン（非公開リポジトリからの自動アップデート用）
+		add_action( 'admin_post_wbd_github_save', array( __CLASS__, 'handle_github_save' ) );
 		// Google Drive連携
 		add_action( 'admin_post_wbd_drive_save', array( __CLASS__, 'handle_drive_save' ) );
 		add_action( 'admin_post_wbd_oauth', array( __CLASS__, 'handle_oauth' ) );
@@ -438,6 +440,21 @@ class WBD_Admin {
 		);
 	}
 
+	// ---------------------------------------------------------------- GitHub更新トークン
+
+	public static function handle_github_save() {
+		self::verify( 'wbd_github_save' );
+
+		$token = trim( (string) wp_unslash( $_POST['wbd_github_token'] ?? '' ) );
+		WBD_Updater::save_token( $token );
+		self::respond(
+			'success',
+			'' === $token
+				? 'GitHubトークンを削除しました。'
+				: 'GitHubトークンを保存しました。更新チェックに認証を使用します。'
+		);
+	}
+
 	// ---------------------------------------------------------------- Google Drive
 
 	public static function handle_drive_save() {
@@ -796,6 +813,20 @@ class WBD_Admin {
 				<?php endif; ?>
 			<?php endif; ?>
 
+			<h2>プラグインの自動更新（GitHub）</h2>
+			<p class="description">
+				配布リポジトリは非公開です。更新通知と自動アップデートを受け取るには、リポジトリの読み取り権限を持つ
+				GitHubトークン（Fine-grained personal access token / Contents: Read-only）を設定してください。
+				現在: <strong><?php echo WBD_Updater::has_token() ? '✅ トークン設定済み' : '⚠ 未設定（更新通知を受け取れません）'; ?></strong>
+			</p>
+			<form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>">
+				<?php wp_nonce_field( 'wbd_github_save' ); ?>
+				<input type="hidden" name="action" value="wbd_github_save">
+				<input type="password" name="wbd_github_token" class="regular-text" value="" placeholder="<?php echo WBD_Updater::has_token() ? '保存済み（変更する場合のみ入力）' : 'github_pat_…'; ?>" autocomplete="off">
+				<button type="submit" class="button">トークンを保存</button>
+				<span class="description">空のまま保存すると削除します。wp-config.php の <code>WBD_GITHUB_TOKEN</code> 定数でも設定可能です。</span>
+			</form>
+
 			<h2>診断</h2>
 			<?php
 			$diag_job  = WBD_Job::public_state();
@@ -808,6 +839,7 @@ class WBD_Admin {
 				'最終実行日'        => $schedule['last_run_date'] ?: '記録なし',
 				'DISABLE_WP_CRON' => ( defined( 'DISABLE_WP_CRON' ) && DISABLE_WP_CRON ) ? 'true（アクセス連動cron停止中）' : '未設定（通常）',
 				'Google Drive'    => WBD_Drive::is_connected() ? '連携済み' : '未連携',
+				'GitHub更新トークン' => WBD_Updater::has_token() ? '設定済み' : '未設定（非公開リポジトリの更新通知を受け取れません）',
 				'ジョブ状態'        => esc_html( $diag_job['status'] ?? 'idle' ) . ( ! empty( $diag_job['phase'] ) ? '（' . esc_html( $diag_job['phase'] ) . '）' : '' ),
 			);
 			?>
